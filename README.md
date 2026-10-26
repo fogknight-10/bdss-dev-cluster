@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-# bdss-dev-cluster
-A complete high-availability big data cluster (HDFS · YARN · Spark · Hive · Kafka) with a VS Code development environment, built to run on a single laptop.
-=======
 # BDSS Dev Cluster
 
 **A complete high-availability big data cluster (HDFS · YARN · Spark · Hive · Kafka) with a VS Code development environment, built to run on a single laptop.**
@@ -789,4 +785,3 @@ No license has been selected yet for the files written for this repository (comp
   https://github.com/usf-etman/bdss-cluster
 =====================================================================
 ```
->>>>>>> da9d6b5 (Initial commit: BDSS Dev Cluster)
