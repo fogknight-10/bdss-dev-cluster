@@ -1,0 +1,15 @@
+# local settings
+.env
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.vscode-server/
+
+# datasets are not published (third-party terms): only the README and the placeholder are tracked
+data/*
+!data/README.md
+!data/.gitkeep
+
+*.log

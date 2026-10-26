@@ -1,0 +1,31 @@
+{
+  "name": "BDSS Dev Cluster - Hadoop | Spark | Hive | Kafka",
+  "dockerComposeFile": ["../docker-compose.yml"],
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "remoteUser": "vscode",
+  "hostRequirements": { "cpus": 4, "memory": "16gb", "storage": "40gb" },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "redhat.java",
+        "vscjava.vscode-maven",
+        "redhat.vscode-yaml",
+        "mechatroner.rainbow-csv"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.analysis.extraPaths": ["/opt/spark/python", "/opt/spark/python/lib/py4j-src.zip"],
+        "python.testing.pytestEnabled": true,
+        "files.eol": "\n",
+        "java.jdt.ls.java.home": "/usr/lib/jvm/java-17",
+        "java.configuration.updateBuildConfiguration": "interactive",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

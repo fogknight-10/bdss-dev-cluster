@@ -1,0 +1,3 @@
+# The dev image only needs its requirements file.
+*
+!.devcontainer/requirements.txt

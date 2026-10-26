@@ -1,0 +1,379 @@
+# =============================================================================
+#  BDSS Dev Cluster  -  HA Hadoop / Spark on YARN / Hive on Tez / Kafka
+#                       + a VS Code (Dev Containers) client
+#
+#  Built by Mohamed (github.com/fogknight-10)  ->  https://github.com/fogknight-10/bdss-dev-cluster
+#  using the original "Big Data, Small Steps" cluster by usf-etman
+#  ->  https://github.com/usf-etman/bdss-cluster
+#  The cluster images (ysfetman/bdss-hadoop-*) are used unchanged.
+#
+#  Start:   docker compose up -d --build
+#  Stop:    docker compose stop          (state is kept)
+#  Reset:   docker compose down -v       (deletes ALL cluster state - see README)
+#
+#  Every host port, the container-name prefix and the DataNode path can be
+#  changed in .env (see .env.example). Nothing else needs editing.
+# =============================================================================
+
+name: bdss-dev-cluster
+
+# ---- reusable blocks --------------------------------------------------------
+x-hadoop-base: &hadoop-base
+  image: ysfetman/bdss-hadoop-base:3.4.2
+  env_file:
+    - ./env_files/hadoop.env
+  networks:
+    - bd_ss_nw
+
+x-spark-worker: &spark-worker
+  image: ysfetman/bdss-hadoop-spark:4.1.1
+  env_file:
+    - ./env_files/spark.env
+  networks:
+    - bd_ss_nw
+  command: ["/scripts/worker.sh"]
+  depends_on:
+    master2:
+      condition: service_healthy
+    dn-perms:
+      condition: service_completed_successfully
+
+x-journal-health: &journal-health
+  test: ["CMD-SHELL", "nc -z localhost 8485"]
+  interval: 5s
+  timeout: 3s
+  retries: 30
+
+x-dev-build: &dev-build
+  context: .
+  dockerfile: .devcontainer/Dockerfile
+  args:
+    AUTHOR_NAME: ${AUTHOR_NAME:-Mohamed}
+
+# ---- services ---------------------------------------------------------------
+services:
+
+  # ------------------------------ coordination -------------------------------
+  zk:
+    image: zookeeper:3.8.4
+    container_name: ${STACK_NAME:-bdss}-zk
+    hostname: zookeeper
+    ports:
+      - "${ZK_PORT:-2181}:2181"
+    networks:
+      bd_ss_nw:
+        aliases: [zk, zookeeper]
+    env_file:
+      - ./env_files/zk.env
+    volumes:
+      - zk-data:/data
+      - zk-datalog:/datalog
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep -q imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------ HDFS journal quorum ------------------------
+  journalnode1:
+    <<: *hadoop-base
+    container_name: ${STACK_NAME:-bdss}-journalnode1
+    hostname: journalnode1
+    privileged: true           # kept from the original cluster
+    ports:
+      - "${JN1_PORT:-18480}:8480"
+    volumes:
+      - jn1:/opt/hadoop/dfs/journal
+    command: ["/scripts/jn.sh"]
+    healthcheck: *journal-health
+
+  journalnode2:
+    <<: *hadoop-base
+    container_name: ${STACK_NAME:-bdss}-journalnode2
+    hostname: journalnode2
+    privileged: true           # kept from the original cluster
+    ports:
+      - "${JN2_PORT:-28480}:8480"
+    volumes:
+      - jn2:/opt/hadoop/dfs/journal
+    command: ["/scripts/jn.sh"]
+    healthcheck: *journal-health
+
+  journalnode3:
+    <<: *hadoop-base
+    container_name: ${STACK_NAME:-bdss}-journalnode3
+    hostname: journalnode3
+    ports:
+      - "${JN3_PORT:-38480}:8480"
+    volumes:
+      - jn3:/opt/hadoop/dfs/journal
+    command: ["/scripts/jn.sh"]
+    healthcheck: *journal-health
+
+  # ------------------------------ masters (HA) -------------------------------
+  master1:
+    <<: *hadoop-base
+    container_name: ${STACK_NAME:-bdss}-master1
+    hostname: master1
+    ports:
+      - "${NN1_UI_PORT:-19870}:9870"
+      - "${RM1_UI_PORT:-18088}:8088"
+    volumes:
+      - nn1:/opt/hadoop/dfs/name
+    command: ["/scripts/active_nn.sh"]
+    depends_on:
+      zk:
+        condition: service_healthy
+      journalnode1:
+        condition: service_healthy
+      journalnode2:
+        condition: service_healthy
+      journalnode3:
+        condition: service_healthy
+    healthcheck:
+      # "formatted" marker from the original scripts, OR existing NameNode metadata
+      # (the marker lives outside the persisted folder and is lost when the container is re-created)
+      test: ["CMD-SHELL", "test -f /opt/hadoop/dfs/.formatted || test -f /opt/hadoop/dfs/name/current/VERSION"]
+      interval: 5s
+      timeout: 2s
+      retries: 60
+
+  master2:
+    <<: *hadoop-base
+    container_name: ${STACK_NAME:-bdss}-master2
+    hostname: master2
+    ports:
+      - "${NN2_UI_PORT:-29870}:9870"
+      - "${RM2_UI_PORT:-28088}:8088"
+    volumes:
+      - nn2:/opt/hadoop/dfs/name
+    command: ["/scripts/standby_nn.sh"]
+    depends_on:
+      master1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /opt/hadoop/dfs/.bootstrapped || test -f /opt/hadoop/dfs/name/current/VERSION"]
+      interval: 5s
+      timeout: 2s
+      retries: 60
+
+  # ------------------------------ workers ------------------------------------
+  # One-shot: the DataNode volumes are created empty and owned by root, but the
+  # workers run as the unprivileged user "user". This makes them writable before
+  # any worker starts (the DataNode then creates its own private dfs/data folder).
+  dn-perms:
+    image: busybox:1.37
+    container_name: ${STACK_NAME:-bdss}-dn-perms
+    network_mode: none
+    restart: "no"
+    command: ["sh", "-c", "chmod 777 /v/dn1 /v/dn2 /v/dn3 /v/dn4"]
+    volumes:
+      - dn1:/v/dn1
+      - dn2:/v/dn2
+      - dn3:/v/dn3
+      - dn4:/v/dn4
+
+  worker1:
+    <<: *spark-worker
+    container_name: ${STACK_NAME:-bdss}-worker1
+    hostname: worker1
+    volumes:
+      - ./data:/data
+      - ./workspace:/workspace
+      - dn1:${HADOOP_TMP_DIR:-/tmp/hadoop-user}
+
+  worker2:
+    <<: *spark-worker
+    container_name: ${STACK_NAME:-bdss}-worker2
+    hostname: worker2
+    volumes:
+      - ./data:/data
+      - ./workspace:/workspace
+      - dn2:${HADOOP_TMP_DIR:-/tmp/hadoop-user}
+
+  worker3:
+    <<: *spark-worker
+    container_name: ${STACK_NAME:-bdss}-worker3
+    hostname: worker3
+    volumes:
+      - ./data:/data
+      - ./workspace:/workspace
+      - dn3:${HADOOP_TMP_DIR:-/tmp/hadoop-user}
+
+  # worker4 = a worker that also runs JupyterLab and the Spark History Server
+  worker4:
+    image: ysfetman/bdss-hadoop-jupyter:3.12
+    container_name: ${STACK_NAME:-bdss}-worker4
+    hostname: worker4
+    env_file:
+      - ./env_files/spark.env
+    networks:
+      - bd_ss_nw
+    ports:
+      - "${SPARK_HISTORY_PORT:-18080}:18080"
+      - "${JUPYTER_PORT:-8000}:8000"
+      - "${SPARK_APP_UI_PORT:-4040}:4040"
+    volumes:
+      - ./workspace/notebooks:/home/user/notebooks
+      - ./data:/data
+      - ./workspace:/workspace
+      - dn4:${HADOOP_TMP_DIR:-/tmp/hadoop-user}
+    command: ["/scripts/worker.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'DataNode' > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    depends_on:
+      master2:
+        condition: service_healthy
+      dn-perms:
+        condition: service_completed_successfully
+
+  # ------------------------------ Hive ---------------------------------------
+  metastore-db:
+    image: postgres:15
+    container_name: ${STACK_NAME:-bdss}-metastore-db
+    hostname: metastore-db
+    ports:
+      - "${METASTORE_DB_PORT:-6432}:5432"
+    networks:
+      - bd_ss_nw
+    environment:
+      POSTGRES_DB: metastore
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive      # must match the Hive configuration baked into the Hive image
+    volumes:
+      - metastore-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive -d metastore -h localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  hive:
+    image: ysfetman/bdss-hadoop-hive:4.1.0
+    container_name: ${STACK_NAME:-bdss}-hive
+    hostname: hive
+    ports:
+      - "${HIVE_UI_PORT:-10002}:10002"
+    networks:
+      - bd_ss_nw
+    env_file:
+      - ./env_files/hive.env
+    command: ["/scripts/hive.sh"]
+    depends_on:
+      worker4:
+        condition: service_healthy
+      metastore-db:
+        condition: service_healthy
+
+  # ------------------------------ Kafka --------------------------------------
+  kafka:
+    image: apache/kafka:4.2.0
+    container_name: ${STACK_NAME:-bdss}-kafka
+    hostname: kafka
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    networks:
+      - bd_ss_nw
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1   # single broker: required for transactions
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # ------------------------------ VS Code client -----------------------------
+  # Not part of the cluster: a client container on the same network with the
+  # same Hadoop 3.4.2 / Spark 4.1.1 binaries and configuration, JDK 17, Maven,
+  # Python 3.12 and the VS Code extensions. Attach with "Dev Containers".
+  dev:
+    build: *dev-build
+    image: ${STACK_NAME:-bdss}-dev:latest
+    container_name: ${STACK_NAME:-bdss}-dev
+    hostname: dev
+    command: sleep infinity
+    networks:
+      - bd_ss_nw
+    ports:
+      - "${DEV_JUPYTER_PORT:-8888}:8888"
+      - "${DEV_SPARK_UI_PORT:-4050}:4040"
+    environment:
+      HADOOP_USER_NAME: ${HADOOP_USER_NAME:-user}
+      SPARK_LOCAL_HOSTNAME: dev            # lets YARN executors connect back to the driver
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      HADOOP_TMP_DIR: ${HADOOP_TMP_DIR:-/tmp/hadoop-user}
+    volumes:
+      - ./workspace:/workspace
+      - ./data:/data
+      - ./scripts:/opt/bdss-scripts:ro
+      - vscode-server:/home/vscode/.vscode-server   # VS Code Server + extensions survive container re-creation
+    depends_on:
+      worker4:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      hive:
+        condition: service_started
+
+  # One-shot setup: waits for an active NameNode, creates the HDFS home folder,
+  # optionally mirrors ./data into HDFS, then exits (Exited 0 = done).
+  init:
+    build: *dev-build
+    image: ${STACK_NAME:-bdss}-dev:latest
+    container_name: ${STACK_NAME:-bdss}-init
+    hostname: init
+    command: ["bash", "/opt/bdss-scripts/hdfs-init.sh"]
+    restart: "no"
+    networks:
+      - bd_ss_nw
+    environment:
+      HADOOP_USER_NAME: ${HADOOP_USER_NAME:-user}
+      HDFS_SYNC_ON_START: ${HDFS_SYNC_ON_START:-false}
+    volumes:
+      - ./data:/data
+      - ./scripts:/opt/bdss-scripts:ro
+    depends_on:
+      worker4:
+        condition: service_healthy
+
+networks:
+  bd_ss_nw:
+
+# Cluster state lives in named volumes (ext4 inside Docker): they keep Linux
+# permissions that DataNodes and PostgreSQL require, and they survive
+# "docker compose down". Only "down -v" removes them.
+volumes:
+  zk-data:
+  zk-datalog:
+  jn1:
+  jn2:
+  jn3:
+  nn1:
+  nn2:
+  dn1:
+  dn2:
+  dn3:
+  dn4:
+  metastore-data:
+  kafka-data:
+  vscode-server:

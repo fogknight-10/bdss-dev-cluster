@@ -1,0 +1,12 @@
+# Python libraries for the dev container (Python 3.12).
+# PySpark is NOT installed with pip: it comes from /opt/spark (Spark 4.1.1, copied from the
+# cluster image) so the driver always matches the cluster exactly.
+pandas>=2.2,<3
+pyarrow>=18
+matplotlib>=3.8
+seaborn>=0.13
+jupyterlab>=4
+ipykernel>=6.29
+pytest>=8.0
+confluent-kafka>=2.4
+python-dotenv>=1.0
